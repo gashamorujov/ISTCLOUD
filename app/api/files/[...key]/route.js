@@ -1,12 +1,15 @@
-import { deleteFile, streamObject } from "@/lib/s3";
+import { getDirectLink } from "@/lib/hot4share";
 import { atomicDelete } from "@/lib/fb-db";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function DELETE(request, { params }) {
   try {
     const { key } = await params;
-    const decodedKey = Array.isArray(key) ? key.join("/") : key;
+    const fileCode = Array.isArray(key) ? key.join("/") : key;
 
-    const result = await atomicDelete(decodedKey, deleteFile);
+    const result = await atomicDelete(fileCode);
 
     if (!result.success) {
       return Response.json(
@@ -14,16 +17,19 @@ export async function DELETE(request, { params }) {
           success: false,
           error: result.error,
           steps: result.steps,
-          message: "Silinmə qismən uğursuz oldu",
+          message: "Silinmə uğursuz oldu",
         },
         { status: result.error === "Fayl tapılmadı" ? 404 : 500 }
       );
     }
 
+    const remoteSkipped = result.steps.some((s) => s.op === "storage_delete" && s.status === "skipped");
     return Response.json({
       success: true,
       steps: result.steps,
-      message: "Fayl tamamilə silindi — storage, database və linklər təmizləndi",
+      message: remoteSkipped
+        ? "Fayl paneldən və backend-dən silindi. Qeyd: Hot4Share API uzaqdan silməni dəstəkləmir, fayl Hot4Share hesabında qala bilər."
+        : "Fayl tamamilə silindi — storage, database və linklər təmizləndi",
     });
   } catch (error) {
     console.error("Delete error:", error);
@@ -37,26 +43,10 @@ export async function DELETE(request, { params }) {
 export async function GET(request, { params }) {
   try {
     const { key } = await params;
-    const decodedKey = Array.isArray(key) ? key.join("/") : key;
+    const fileCode = Array.isArray(key) ? key.join("/") : key;
 
-    const result = await streamObject(decodedKey);
-    const contentType = result.ContentType || "application/octet-stream";
-    const contentLength = result.ContentLength || 0;
-    const lastModified = result.LastModified ? result.LastModified.toISOString() : undefined;
-    const fileName = decodedKey.split("-").slice(3).join("-") || decodedKey;
-
-    const headers = {
-      "Content-Type": contentType,
-      "Content-Length": contentLength,
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"`,
-    };
-    if (lastModified) headers["Last-Modified"] = lastModified;
-
-    return new Response(result.Body, {
-      status: 200,
-      headers,
-    });
+    const { url } = await getDirectLink(fileCode);
+    return Response.redirect(url, 302);
   } catch (error) {
     console.error("Stream error:", error);
     return Response.json(

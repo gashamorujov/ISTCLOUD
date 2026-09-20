@@ -27,7 +27,9 @@ function uploadWithProgress(url, file, onProgress) {
       }
     };
     xhr.onerror = () => reject(new Error("Şəbəkə xətası"));
-    xhr.send(file);
+    const body = new FormData();
+    body.append("file", file, file.name);
+    xhr.send(body);
   });
 }
 
@@ -72,10 +74,7 @@ export default function UserPanel() {
 
     for (const job of jobs) {
       try {
-        const formData = new FormData();
-        formData.append("file", job.file);
-
-        await uploadWithProgress("/api/files", formData, (progress) => {
+        await uploadWithProgress("/api/files", job.file, (progress) => {
           setUploads((prev) =>
             prev.map((u) => (u.id === job.id ? { ...u, progress } : u))
           );
