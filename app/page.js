@@ -7,7 +7,8 @@ import SearchBar from "./components/SearchBar";
 import FileList from "./components/FileList";
 import FileViewer from "./components/FileViewer";
 
-function uploadWithProgress(url, file, onProgress) {
+function uploadViaProxy(url, file, onProgress) {
+  // Ehtiyat yol: fayl server proxy ilə Hot4Share-ə yüklənir
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url, true);
@@ -31,6 +32,67 @@ function uploadWithProgress(url, file, onProgress) {
     body.append("file", file, file.name);
     xhr.send(body);
   });
+}
+
+async function uploadDirectToShare(file, onProgress) {
+  // 1) Upload URL + sessiya al
+  const initRes = await fetch("/api/upload/init", { cache: "no-store" });
+  if (!initRes.ok) {
+    const errData = await initRes.json().catch(() => ({}));
+    throw new Error(errData.error || "Upload serveri hazırlanmadı");
+  }
+  const init = await initRes.json().catch(() => ({}));
+  if (!init.url || !init.sessId) throw new Error("Upload serveri hazırlanmadı");
+
+  // 2) Faylı birbaşa Hot4Share-ə yüklə (CORS dəstəyi var, serverless limitləri keçilir)
+  const body = new FormData();
+  body.append("sess_id", init.sessId);
+  body.append("utype", "prem");
+  body.append("file_0_descr", file.name);
+  body.append("file_0", file, file.name);
+  const target = `${init.url}?upload_type=file&sess_id=${encodeURIComponent(init.sessId)}&utype=prem`;
+
+  const text = await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", target, true);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.responseText);
+      else reject(new Error(`Yükləmə serveri xəta qaytardı (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("Birbaşa yükləmə mümkün olmadı"));
+    xhr.send(body);
+  });
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("Upload cavabı oxuna bilmədi");
+  }
+  const first = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (!first || first.file_status !== "OK" || !first.file_code) {
+    throw new Error(first?.file_status || "Yükləmə rədd edildi");
+  }
+  return first.file_code;
+}
+
+async function registerUpload(file, fileCode) {
+  const res = await fetch("/api/files/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fileCode,
+      name: file.name,
+      size: file.size,
+      contentType: file.type || "application/octet-stream",
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Metadata qeydə alınmadı");
+  return data.file;
 }
 
 export default function UserPanel() {
@@ -73,12 +135,22 @@ export default function UserPanel() {
     setUploads((prev) => [...prev, ...jobs]);
 
     for (const job of jobs) {
+      const updateProgress = (progress) =>
+        setUploads((prev) =>
+          prev.map((u) => (u.id === job.id ? { ...u, progress } : u))
+        );
+
       try {
-        await uploadWithProgress("/api/files", job.file, (progress) => {
-          setUploads((prev) =>
-            prev.map((u) => (u.id === job.id ? { ...u, progress } : u))
-          );
-        });
+        let fileCode = null;
+        try {
+          fileCode = await uploadDirectToShare(job.file, updateProgress);
+        } catch (directErr) {
+          // CORS/şəbəkə məhdudiyyəti olan mühitlərdə server proxy-yə keç
+          await uploadViaProxy("/api/files", job.file, updateProgress);
+        }
+        if (fileCode) {
+          await registerUpload(job.file, fileCode);
+        }
 
         setUploads((prev) => prev.filter((u) => u.id !== job.id));
         loadFiles(query);

@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ISTCLOUD — Fayl Meneceri
 
-## Getting Started
+Next.js + Tailwind CSS ilə qurulmuş tam funksional fayl meneceri. Fayllar
+Hot4Share API üzərindən idarə olunur, metadata Firebase Realtime Database-də
+saxlanılır.
 
-First, run the development server:
+## Xüsusiyyətlər
+
+- **User Panel** — qeydiyyatsız açıq: axtarış, drag & drop, fayl yükləmə, baxış, endirmə
+- **Admin Panel** — axtarış sahəsinə `1006` yazdıqda açılır (əlavə şifrə tələb olunmur)
+- Admin parolu: `0706` (Admin Paneldən dəyişdirmək mümkündür)
+- Fayl silinməsi: backend + metadata + linklər təmizlənir, addım-addım status göstərilir
+- Yükləmə birbaşa brauzerdən Hot4Share-ə edilir (serverless limitlərindən təsirlənmir), server proxy ehtiyat yoldur
+- Tam responsiv, mobil və masaüstü üçün optimallaşdırılmışdır
+
+## Yerli Quraşdırma
 
 ```bash
+npm install
+cp .env.example .env.local
+# .env.local içində HOT4SHARE_API_KEY və ADMIN_PASSWORD-ü təyin edin
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Sayt: `http://localhost:3000`
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+## Deploy (Vercel, Netlify, hər hansı Node.js host)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Reponu platformaya import edin.
+2. Aşağıdakı environment dəyişənlərini təyin edin:
+   - `HOT4SHARE_API_KEY` — Hot4Share API açarı
+   - `ADMIN_PASSWORD` — admin parolu (standart: `0706`)
+3. Build əmri: `npm run build` · Start əmri: `npm run start`
 
-## Learn More
+Yükləmə brauzerdən Hot4Share-ə birbaşa getdiyi üçün Vercel-in 4.5 MB-lıq
+request limiti tətbiq olunmur — böyük video/sənəd faylları da işləyir.
 
-To learn more about Next.js, take a look at the following resources:
+## API Endpoint-ləri
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `GET /api/files?q=...` — fayl siyahısı + axtarış
+- `POST /api/files` — server proxy ilə yükləmə (ehtiyat yol)
+- `GET /api/upload/init` — birbaşa yükləmə üçün upload URL + sessiya
+- `POST /api/files/register` — birbaşa yüklənmış faylın metadata qeydiyyatı
+- `GET /api/files/<code>` — daimi baxış/endirmə keçidi (təzə direct link, müddəti bitmir)
+- `DELETE /api/files/<code>` — atomik silmə (storage + DB + linklər)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Qeydlər
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Hot4Share API silmə əməliyyatını dəstəkləmir: silinən fayl paneldən və
+  backend-dən tam silinir və siyahıda görünmür; fiziki nüsxə Hot4Share hesabında
+  qala bilər (statusu adminə göstərilir).
