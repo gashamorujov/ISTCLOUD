@@ -1,128 +1,79 @@
-import { uploadBuffer, listAllFiles, getFileInfo, guessContentType } from "@/lib/hot4share";
-import { saveFileMetadata, getMetaMap, getHiddenCodes } from "@/lib/fb-db";
+import { listFolder, getRootFolderId, uploadFile, isDriveConfigured, normalizeDriveItem } from "@/lib/google-drive";
+import { saveFileMetadata } from "@/lib/fb-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function normalizeFile(remote, meta) {
-  const code = remote.fileCode;
-  const encodedKey = encodeURIComponent(code);
-  return {
-    key: code,
-    name: remote.name,
-    originalName: meta?.original_name || remote.name,
-    size: remote.size,
-    contentType: meta?.content_type || guessContentType(remote.name),
-    url: `/api/files/${encodedKey}`,
-    pageUrl: remote.pageUrl || null,
-    downloads: remote.downloads || 0,
-    lastModified: meta?.last_modified || remote.uploaded || null,
-    createdAt: meta?.created_at || (remote.uploaded ? Date.parse(remote.uploaded) || null : null),
-  };
-}
-
 export async function GET(request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const search = (searchParams.get("search") || searchParams.get("q") || "").trim().toLowerCase();
-
-    const [remotes, metas, hidden] = await Promise.all([
-      listAllFiles(),
-      getMetaMap().catch(() => ({})),
-      getHiddenCodes().catch(() => new Set()),
-    ]);
-
-    let files = remotes
-      .filter((r) => !hidden.has(r.fileCode))
-      .map((r) => normalizeFile(r, metas?.[r.fileCode]));
-
-    if (search) {
-      files = files.filter(
-        (f) =>
-          (f.name && f.name.toLowerCase().includes(search)) ||
-          (f.originalName && f.originalName.toLowerCase().includes(search)) ||
-          (f.key && f.key.toLowerCase().includes(search))
+    if (!isDriveConfigured()) {
+      return Response.json(
+        { error: "Google Drive bağlantısı qurulmadı. Zəhmət olmasa daha sonra yenidən cəhd edin.", files: [] },
+        { status: 500 }
       );
     }
+    const { searchParams } = new URL(request.url);
+    const folder = searchParams.get("folder") || (await getRootFolderId());
+    const search = (searchParams.get("search") || searchParams.get("q") || "").trim();
+    const sort = searchParams.get("sort") || "date";
 
-    files.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    return Response.json({ files });
+    const items = await listFolder({ folderId: folder, search, sort });
+    const files = items.map(normalizeDriveItem);
+    return Response.json({ files, folderId: folder });
   } catch (error) {
-    console.error("List files error:", error);
-    return Response.json({ error: "Fayl siyahısı alına bilmədi", details: error.message, files: [] }, { status: 500 });
+    console.error("List files error:", error?.detail || error.message, error?.status || "");
+    return Response.json({ error: error.message || "Fayl siyahısı alına bilmədi", files: [] }, { status: 500 });
   }
-}
-
-async function extractUpload(request) {
-  const contentType = request.headers.get("content-type") || "";
-  if (contentType.includes("multipart/form-data")) {
-    const formData = await request.formData();
-    const file = formData.get("file");
-    if (!file || typeof file.arrayBuffer !== "function") return null;
-    return { blob: file, filename: file.name || "fayl", type: file.type || "" };
-  }
-  const buffer = Buffer.from(await request.arrayBuffer());
-  if (!buffer.length) return null;
-  const { searchParams } = new URL(request.url);
-  const filename =
-    request.headers.get("x-filename") ||
-    searchParams.get("filename") ||
-    "fayl";
-  return { blob: new Blob([buffer], { type: contentType.split(";")[0] || "application/octet-stream" }), filename, type: contentType.split(";")[0] };
 }
 
 export async function POST(request) {
   try {
-    const upload = await extractUpload(request);
-    if (!upload) {
+    if (!isDriveConfigured()) {
+      return Response.json(
+        { error: "Google Drive bağlantısı qurulmadı. Zəhmət olmasa daha sonra yenidən cəhd edin." },
+        { status: 500 }
+      );
+    }
+    const formData = await request.formData();
+    const file = formData.get("file");
+    if (!file || typeof file.arrayBuffer !== "function") {
       return Response.json({ error: "Fayl təqdim edilməyib" }, { status: 400 });
     }
 
-  const buffer = Buffer.from(await upload.blob.arrayBuffer());
+    const folderId = String(formData.get("folder") || "") || (await getRootFolderId());
+    const buffer = Buffer.from(await file.arrayBuffer());
     if (!buffer.length) {
       return Response.json({ error: "Boş fayl yükləmək olmur" }, { status: 400 });
     }
 
-    const contentType = guessContentType(upload.filename, upload.type);
-    const fileCode = await uploadBuffer({ buffer, filename: upload.filename, contentType });
+    const contentType = file.type || "application/octet-stream";
+    const driveFile = await uploadFile({
+      name: file.name,
+      mimeType: contentType,
+      buffer,
+      folderId,
+    });
 
-    let info = null;
-    try {
-      info = await getFileInfo(fileCode);
-    } catch {
-      info = null;
-    }
-
-    const name = info?.name || upload.filename;
-    const size = info?.size || buffer.length;
-    const uploaded = info?.uploaded || new Date().toISOString();
-    const encodedKey = encodeURIComponent(fileCode);
-    const proxyUrl = `/api/files/${encodedKey}`;
-
+    const item = normalizeDriveItem(driveFile);
     await saveFileMetadata({
-      key: fileCode,
-      name,
-      originalName: upload.filename,
-      size,
-      contentType,
-      storageUrl: proxyUrl,
-      lastModified: uploaded,
+      key: driveFile.id,
+      name: driveFile.name,
+      originalName: file.name,
+      size: driveFile.size || buffer.length,
+      contentType: driveFile.mimeType || contentType,
+      storageUrl: item.url,
+      folderId,
+      lastModified: driveFile.modifiedTime || new Date().toISOString(),
     });
 
-    return Response.json({
-      success: true,
-      file: {
-        key: fileCode,
-        name,
-        originalName: upload.filename,
-        size,
-        contentType,
-        url: proxyUrl,
-        lastModified: uploaded,
-      },
-    });
+    return Response.json({ success: true, file: item });
   } catch (error) {
-    console.error("Upload error:", error);
-    return Response.json({ error: "Yükləmə uğursuz oldu", details: error.message }, { status: 500 });
+    console.error("Upload error:", error?.detail || error.message, error?.status || "");
+    const msg = error?.status === 429
+      ? "Google Drive API limitinə çatıldı. Biraz sonra yenidən cəhd edin."
+      : (error.message && /bağlantısı qurulmadı|uğursuz oldu/.test(error.message))
+        ? error.message
+        : "Fayl yüklənmədi. Yenidən cəhd edin.";
+    return Response.json({ error: msg, details: error.message }, { status: 500 });
   }
 }

@@ -5,7 +5,7 @@ import Image from "next/image";
 import SearchBar from "../components/SearchBar";
 import FileList from "../components/FileList";
 import FileViewer from "../components/FileViewer";
-import { IconLock, IconSettings, IconAlert, IconCheck, IconX, IconClose } from "../components/Icons";
+import { IconLock, IconSettings, IconAlert, IconCheck, IconX, IconClose, IconGrid, IconList, IconFolderPlus } from "../components/Icons";
 
 export default function AdminPage() {
   const [password, setPassword] = useState("");
@@ -27,6 +27,14 @@ export default function AdminPage() {
   const [pwNew, setPwNew] = useState("");
   const [pwMsg, setPwMsg] = useState("");
   const [pwLoading, setPwLoading] = useState(false);
+  const [currentFolder, setCurrentFolder] = useState(null);
+  const [rootFolderId, setRootFolderId] = useState(null);
+  const [breadcrumb, setBreadcrumb] = useState([]);
+  const [sort, setSort] = useState("date");
+  const [view, setView] = useState("list");
+  const [storageInfo, setStorageInfo] = useState(null);
+  const [shareLink, setShareLink] = useState(null);
+  const [listError, setListError] = useState("");
 
   const STEP_LABELS = {
     check: "Fayl yoxlanılır",
@@ -77,30 +85,50 @@ export default function AdminPage() {
     if (!authed) setLoginError("Yanlış parol");
   }
 
-  const loadFiles = useCallback(async (q = "") => {
+  const loadFiles = useCallback(async (folderId = null, q = "", s = "date") => {
     setLoading(true);
+    setListError("");
     try {
-      const res = await fetch(`/api/files${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+      const params = new URLSearchParams();
+      if (folderId) params.set("folder", folderId);
+      if (q) params.set("q", q);
+      if (s) params.set("sort", s);
+      const res = await fetch(`/api/files?${params.toString()}`);
       const data = await res.json();
-      const arr = data.files || [];
-      setFiles(arr);
-      setStats({
-        totalFiles: arr.length,
-        totalSize: arr.reduce((s, f) => s + (f.size || 0), 0),
-      });
+      if (!res.ok) {
+        setListError(data.error || "Xəta baş verdi");
+        setFiles([]);
+      } else {
+        const arr = data.files || [];
+        setFiles(arr);
+        setStats({
+          totalFiles: arr.length,
+          totalSize: arr.reduce((s, f) => s + (f.size || 0), 0),
+        });
+        if (!folderId && data.folderId) setRootFolderId(data.folderId);
+      }
     } catch {
       setFiles([]);
+      setListError("Şəbəkə xətası");
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { if (authed) loadFiles(); }, [authed, loadFiles]);
+  const loadStorage = useCallback(async () => {
+    try {
+      const res = await fetch("/api/storage");
+      if (res.ok) setStorageInfo(await res.json());
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { if (authed) loadFiles(currentFolder, query, sort); }, [authed, loadFiles]);
+  useEffect(() => { if (authed) loadStorage(); }, [authed, loadStorage]);
   useEffect(() => {
     if (!authed) return;
-    const t = setTimeout(() => loadFiles(query), 300);
+    const t = setTimeout(() => loadFiles(currentFolder, query, sort), 300);
     return () => clearTimeout(t);
-  }, [query, authed, loadFiles]);
+  }, [query, sort, authed, currentFolder]);
 
   function handleDelete(file) {
     setDeleteConfirm(file);
@@ -141,6 +169,63 @@ export default function AdminPage() {
 
   function handleView(file) {
     setViewingFile(file);
+  }
+
+  function handleOpenFolder(folder) {
+    setBreadcrumb((prev) => [...prev, { id: currentFolder, name: folder.name }]);
+    setCurrentFolder(folder.id);
+  }
+
+  function navigateBreadcrumb(index) {
+    if (index === -1) {
+      setCurrentFolder(rootFolderId);
+      setBreadcrumb([]);
+    } else {
+      setCurrentFolder(breadcrumb[index].id);
+      setBreadcrumb((prev) => prev.slice(0, index));
+    }
+  }
+
+  async function handleCreateFolder() {
+    const name = prompt("Yeni qovluq adı:");
+    if (!name || !name.trim()) return;
+    try {
+      const res = await fetch("/api/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), parent: currentFolder }),
+      });
+      if (res.ok) loadFiles(currentFolder, query, sort);
+    } catch { /* ignore */ }
+  }
+
+  async function handleRename(file) {
+    const name = prompt("Yeni fayl/qovluq adı:", file.name);
+    if (!name || !name.trim() || name.trim() === file.name) return;
+    try {
+      const res = await fetch(`/api/files/${file.key}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      if (res.ok) loadFiles(currentFolder, query, sort);
+    } catch { /* ignore */ }
+  }
+
+  async function handleShare(file) {
+    try {
+      const res = await fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId: file.key }),
+      });
+      const data = await res.json();
+      if (res.ok && data.url) {
+        const url = `${window.location.origin}${data.url}`;
+        setShareLink({ url, name: file.name });
+        try { await navigator.clipboard.writeText(url); } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
   }
 
   async function handleChangePassword(e) {
@@ -243,15 +328,70 @@ export default function AdminPage() {
         </div>
       </header>
 
-      <div className="mb-6">
+      {listError && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{listError}</div>
+      )}
+
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <SearchBar onSearch={setQuery} placeholder="Bütün fayllar arasında axtar..." />
+        <div className="flex items-center gap-2">
+          <select value={sort} onChange={(e) => setSort(e.target.value)} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 outline-none focus:ring-2 focus:ring-indigo-400">
+            <option value="date">Tarixə görə</option>
+            <option value="name">Adına görə</option>
+            <option value="size">Ölçüyə görə</option>
+          </select>
+          <button onClick={() => setView(view === "grid" ? "list" : "grid")} className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-50 transition" title={view === "grid" ? "Siyahı görünüşü" : "Tor görünüşü"}>
+            {view === "grid" ? <IconList className="w-4 h-4" /> : <IconGrid className="w-4 h-4" />}
+          </button>
+        </div>
       </div>
+
+      {/* Breadcrumb + actions */}
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+        <button onClick={() => navigateBreadcrumb(-1)} className="text-indigo-600 hover:underline">CloudStorage</button>
+        {breadcrumb.map((b, i) => (
+          <span key={i} className="flex items-center gap-1">
+            <span className="text-slate-300">/</span>
+            <button onClick={() => navigateBreadcrumb(i)} className="text-indigo-600 hover:underline">{b.name}</button>
+          </span>
+        ))}
+        <button onClick={handleCreateFolder} className="ml-auto rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition flex items-center gap-1" title="Yeni qovluq">
+          <IconFolderPlus className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Qovluq yarat</span>
+        </button>
+      </div>
+
+      {/* Storage bar */}
+      {storageInfo && storageInfo.total > 0 && (
+        <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-500 shadow-sm">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span>İstifadə olunan: {fmtBytes(storageInfo.used)} / {fmtBytes(storageInfo.total)}</span>
+            <span>{storageInfo.user}</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-slate-100">
+            <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${Math.min(100, (storageInfo.used / storageInfo.total) * 100)}%` }} />
+          </div>
+        </div>
+      )}
 
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Fayllar</h2>
         <span className="text-xs text-slate-400">{files.length} fayl</span>
       </div>
-      <FileList files={files} loading={loading} onDownload={handleDownload} onDelete={handleDelete} onView={handleView} isAdmin={true} deletingKey={deleting ? deleteConfirm?.key : null} />
+      <FileList
+        files={files}
+        loading={loading}
+        onDownload={handleDownload}
+        onDelete={handleDelete}
+        onView={handleView}
+        onRename={handleRename}
+        onShare={handleShare}
+        onOpenFolder={handleOpenFolder}
+        isAdmin={true}
+        view={view}
+        insideFolder={currentFolder && currentFolder !== rootFolderId}
+        deletingKey={deleting ? deleteConfirm?.key : null}
+      />
 
       {viewingFile && (
         <FileViewer
@@ -259,6 +399,21 @@ export default function AdminPage() {
           onClose={() => setViewingFile(null)}
           onDownload={handleDownload}
         />
+      )}
+
+      {/* Share modal */}
+      {shareLink && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShareLink(null)}>
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-800">Paylaşma linki</h3>
+              <button onClick={() => setShareLink(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><IconClose className="w-4 h-4" /></button>
+            </div>
+            <p className="mb-2 text-xs text-slate-500 truncate">{shareLink.name}</p>
+            <input readOnly value={shareLink.url} className="mb-3 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 select-all" onClick={(e) => e.target.select()} />
+            <button onClick={() => { navigator.clipboard.writeText(shareLink.url).catch(() => {}); setShareLink(null); }} className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition">Linki kopyala</button>
+          </div>
+        </div>
       )}
 
       {/* Deletion Progress Overlay */}
