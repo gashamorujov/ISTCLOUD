@@ -1,20 +1,20 @@
-import { getStorageInfo, isDriveConfigured } from "@/lib/google-drive";
+import { getStorageInfo, isStorageConfigured } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    if (!isDriveConfigured()) {
+    if (!isStorageConfigured()) {
       return Response.json(
-        { error: "Google Drive bağlantısı qurulmadı. Zəhmət olmasa daha sonra yenidən cəhd edin." },
+        { error: "Storage not configured. Please check environment variables." },
         { status: 500 }
       );
     }
     const info = await getStorageInfo();
     return Response.json(info);
   } catch (error) {
-    console.error("Storage info error:", error?.detail || error.message, error?.status || "");
-    return Response.json({ error: error.message || "Storage məlumatı alına bilmədi" }, { status: 500 });
+    console.error("Storage info error:", error.message);
+    return Response.json({ error: error.message || "Failed to get storage info" }, { status: 500 });
   }
 }

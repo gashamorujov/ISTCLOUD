@@ -1,4 +1,4 @@
-import { downloadFile, deleteFile, renameFile, getFile, isDriveConfigured, normalizeDriveItem } from "@/lib/google-drive";
+import { downloadFile, deleteFile, renameFile, getFile, isStorageConfigured, normalizeStorageItem } from "@/lib/storage";
 import { atomicDelete, updateFileMetadata } from "@/lib/fb-db";
 
 export const runtime = "nodejs";
@@ -9,9 +9,9 @@ export async function GET(request, { params }) {
     const { key } = await params;
     const fileId = Array.isArray(key) ? key.join("/") : key;
 
-    if (!isDriveConfigured()) {
+    if (!isStorageConfigured()) {
       return Response.json(
-        { error: "Google Drive bağlantısı qurulmadı. Zəhmət olmasa daha sonra yenidən cəhd edin." },
+        { error: "Storage not configured. Please check environment variables." },
         { status: 500 }
       );
     }
@@ -26,9 +26,9 @@ export async function GET(request, { params }) {
       meta = null;
     }
 
-    const contentType = meta?.mimeType || stream.headers.get("content-type") || "application/octet-stream";
-    const contentLength = Number(meta?.size) || Number(stream.headers.get("content-length")) || 0;
-    const name = meta?.name || fileId;
+    const contentType = meta?.mimeType || stream.headers?.get("content-type") || "application/octet-stream";
+    const contentLength = Number(meta?.size) || Number(stream.headers?.get("content-length")) || 0;
+    const name = meta?.name || fileId.split("/").pop();
 
     const headers = {
       "Content-Type": contentType,
@@ -37,15 +37,15 @@ export async function GET(request, { params }) {
     };
     if (contentLength) headers["Content-Length"] = String(contentLength);
     if (range && stream.status === 206) {
-      headers["Content-Range"] = stream.headers.get("content-range") || "";
+      headers["Content-Range"] = stream.headers?.get("content-range") || "";
       headers["Accept-Ranges"] = "bytes";
     }
 
     return new Response(stream.body, { status: stream.status, headers });
   } catch (error) {
-    console.error("Stream error:", error?.detail || error.message, error?.status || "");
+    console.error("Stream error:", error.message);
     return Response.json(
-      { error: error?.status === 404 ? "Fayl tapılmadı və ya artıq silinib." : (error.message || "Fayl tapılmadı") },
+      { error: error.status === 404 ? "File not found or already deleted" : (error.message || "File not found") },
       { status: error?.status === 404 ? 404 : 500 }
     );
   }
@@ -64,20 +64,20 @@ export async function DELETE(request, { params }) {
           success: false,
           error: result.error,
           steps: result.steps,
-          message: "Silinmə uğursuz oldu",
+          message: "Deletion failed",
         },
-        { status: result.error === "Fayl tapılmadı" ? 404 : 500 }
+        { status: result.error === "File not found" ? 404 : 500 }
       );
     }
 
     return Response.json({
       success: true,
       steps: result.steps,
-      message: "Fayl tamamilə silindi — Google Drive, database və linklər təmizləndi",
+      message: "File completely deleted from storage, database and links cleaned",
     });
   } catch (error) {
-    console.error("Delete error:", error?.detail || error.message, error?.status || "");
-    return Response.json({ error: "Silinmə uğursuz oldu", details: error.message }, { status: 500 });
+    console.error("Delete error:", error.message);
+    return Response.json({ error: "Deletion failed", details: error.message }, { status: 500 });
   }
 }
 
@@ -88,19 +88,19 @@ export async function PATCH(request, { params }) {
     const body = await request.json().catch(() => ({}));
     const newName = String(body.name || "").trim();
     if (!newName) {
-      return Response.json({ error: "Yeni fayl adı tələb olunur" }, { status: 400 });
+      return Response.json({ error: "New file name required" }, { status: 400 });
     }
 
     const updated = await renameFile(fileId, newName);
     await updateFileMetadata(fileId, {
       name: updated.name,
       original_name: updated.name,
-      last_modified: updated.modifiedTime || new Date().toISOString(),
+      last_modified: updated.lastModified || new Date().toISOString(),
     });
 
-    return Response.json({ success: true, file: normalizeDriveItem(updated) });
+    return Response.json({ success: true, file: normalizeStorageItem(updated) });
   } catch (error) {
-    console.error("Rename error:", error?.detail || error.message, error?.status || "");
-    return Response.json({ error: "Faylın adı dəyişdirilə bilmədi", details: error.message }, { status: 500 });
+    console.error("Rename error:", error.message);
+    return Response.json({ error: "Failed to rename file", details: error.message }, { status: 500 });
   }
 }
